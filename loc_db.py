@@ -5,7 +5,7 @@
 
 import sqlite3
 import logging
-from typing import Tuple, Optional
+from typing import Optional, Dict
 
 import pandas as pd
 
@@ -14,8 +14,6 @@ logging.basicConfig(level=logging.DEBUG)
 
 class LocationDatabase:
     """Location Database Helper class."""
-
-    loc_table = "location"
 
     def __init__(self):
         self.conn = None
@@ -32,6 +30,7 @@ class LocationDatabase:
         """
         logging.debug(f"Connecting to {filename}")
         self.conn = sqlite3.connect(filename)
+        self.conn.row_factory = sqlite3.Row
 
     def close(self) -> None:
         """Closes the connection to the database."""
@@ -45,11 +44,11 @@ class LocationDatabase:
         result : Boolean
           whether the table exists
         """
-        sql = f"""
+        sql = """
         SELECT name
         FROM sqlite_master
         WHERE type='table'
-        AND name='{self.loc_table}';
+        AND name='location';
         """
         cursor = self.conn.cursor()
         cursor.execute(sql)
@@ -94,16 +93,16 @@ class LocationDatabase:
             logging.debug(f"First time: {first_time}")
 
         if erase_first and not first_time:
-            sql_drop_data = f"DELETE FROM location WHERE country_code = ?"
+            sql_drop_data = "DELETE FROM location WHERE country_code = ?"
             self.conn.execute(sql_drop_data, (country_code,))
 
-        df.to_sql(self.loc_table, con=self.conn, if_exists="append")
+        df.to_sql("location", con=self.conn, if_exists="append")
 
         if first_time:
             cursor = self.conn.cursor()
-            sql_create_index = f"""
+            sql_create_index = """
             CREATE INDEX IF NOT EXISTS idx_postalcode_countrycode
-            ON {self.loc_table}(postal_code)
+            ON location(postal_code)
             """
             cursor.execute(sql_create_index)
 
@@ -114,9 +113,9 @@ class LocationDatabase:
         Shows number of postcodes by country
         """
 
-        sql = f"""
+        sql = """
             SELECT country_code, count(*)
-            FROM {self.loc_table}
+            FROM location
             GROUP BY country_code
         """
         cursor = self.conn.cursor()
@@ -125,12 +124,16 @@ class LocationDatabase:
         for row in rows:
             print(row)
 
-    def find_lat_lon(
-        self, country_code: str, postcode: str
-    ) -> Optional[Tuple[str, str, float, float, int]]:
+    def find_lat_lon(self, country_code: str, postcode: str) -> Optional[Dict]:
         """Find coordinates based on a country_code and postcode
-        returns tuple (country_code, postcode, latitude, longitude, accuracy)
+        returns Dict of row
         If postcode is not found then None is returned
+
+        example output
+        {
+            'country_code': 'GB', 'postal_code': 'SW1W 0NY',
+            'latitude': 51.4954, 'longitude': -0.1474, 'accuracy': 6
+        }
 
         Parameters
         ----------
@@ -141,18 +144,20 @@ class LocationDatabase:
 
         Returns
         -------
-        result : Tuple
-          Tuple of (country_code, postcode, latitude, longitude, accuracy)
+        result : Dict
+          Dict of output
         """
         cursor = self.conn.cursor()
+
         sql = f"""
             SELECT country_code, postal_code, latitude, longitude, accuracy
-            FROM {self.loc_table}
+            FROM location
             WHERE country_code = ?
             AND postal_code = ?
         """
 
-        rows = cursor.execute(sql, (country_code, postcode)).fetchall()
-        if not rows:
+        row = cursor.execute(sql, (country_code, postcode)).fetchone()
+        if not row:
             return None
-        return rows[0]
+
+        return dict(row)
