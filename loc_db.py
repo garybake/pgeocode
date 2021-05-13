@@ -15,21 +15,18 @@ logging.basicConfig(level=logging.DEBUG)
 class LocationDatabase:
     """Location Database Helper class."""
 
-    def __init__(self):
-        self.conn = None
-
-    def connect(self, filename: str) -> None:
+    def __init__(self, db_filename):
         """Connect to the database.
         This will create the database if it doesn't already exist
 
         Parameters
         ----------
-        filename : str
+        db_filename : str
           path to the sqlite database
 
         """
-        logging.debug(f"Connecting to {filename}")
-        self.conn = sqlite3.connect(filename)
+        logging.debug(f"Connecting to {db_filename}")
+        self.conn = sqlite3.connect(db_filename)
         self.conn.row_factory = sqlite3.Row
 
     def close(self) -> None:
