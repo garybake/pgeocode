@@ -103,7 +103,7 @@ class LocationDatabase:
             """
             cursor.execute(sql_create_index)
 
-    def show_country_counts(self) -> None:
+    def show_country_counts(self) -> Dict:
         """Print contents of the database
         TODO: this is mostly for debugging so should take it out
 
@@ -117,9 +117,7 @@ class LocationDatabase:
         """
         cursor = self.conn.cursor()
         rows = cursor.execute(sql).fetchall()
-
-        for row in rows:
-            print(row)
+        return dict(rows)
 
     def find_lat_lon(self, country_code: str, postcode: str) -> Optional[Dict]:
         """Find coordinates based on a country_code and postcode

@@ -309,8 +309,14 @@ class TestLocDB:
         assert res["latitude"] == 46.4444
         assert res["longitude"] == 1.3336
 
-    def test_show_country_counts(self):
-        assert True
+    def test_show_country_counts(self, setup_db):
+        self.create_locations_table(setup_db)
+        self.create_locations_data(setup_db)
+
+        counts_dict = setup_db.show_country_counts()
+
+        assert counts_dict["AA"] == 1
+        assert counts_dict["AB"] == 2
 
     def test_find_lat_lon(self, setup_db):
         self.create_locations_table(setup_db)
