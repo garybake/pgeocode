@@ -7,17 +7,20 @@ import os
 import urllib.request
 import warnings
 from io import BytesIO
-from typing import Any, Tuple, List
+from typing import Any, List
 from zipfile import ZipFile
 
 import numpy as np
 import pandas as pd
+
+from loc_db import LocationDatabase
 
 __version__ = "0.3.0"
 
 STORAGE_DIR = os.environ.get(
     "PGEOCODE_DATA_DIR", os.path.join(os.path.expanduser("~"), "pgeocode_data")
 )
+DB_FILE = os.path.join(STORAGE_DIR, "locations.sqlite3")
 
 # A list of download locations. If the first URL fails, following ones will
 # be used.
@@ -183,12 +186,9 @@ class Nominatim:
     ----------
     country: str, default='fr'
        country code. See the documentation for a list of supported countries.
-    unique: bool, default=True
-        Create unique postcode index, merging all places with the same postcode
-        into a single entry
     """
 
-    def __init__(self, country: str = "fr", unique: bool = True):
+    def __init__(self, country: str = "fr"):
 
         country = country.upper()
         if country not in COUNTRIES_VALID:
@@ -206,75 +206,62 @@ class Nominatim:
                 "in 1999."
             )
         self.country = country
-        self._data_path, self._data = self._get_data(country)
-        if unique:
-            self._data_frame = self._index_postal_codes()
-        else:
-            self._data_frame = self._data
-        self.unique = unique
+        self.loc_db = LocationDatabase(DB_FILE)
+        self._get_data(country)
 
-    @staticmethod
-    def _get_data(country: str) -> Tuple[str, pd.DataFrame]:
+    def _get_data(self, country: str) -> None:
         """Load the data from disk; otherwise download and save it"""
+        if not self.loc_db.has_country_data(country):
+            data_path = os.path.join(STORAGE_DIR, country.upper() + ".txt")
+            if os.path.exists(data_path):
+                data = pd.read_csv(data_path, dtype={"postal_code": str})
+            else:
+                download_urls = [
+                    val.format(country=country) for val in DOWNLOAD_URL
+                ]
+                with _open_extract_cycle_url(download_urls, country) as fh:
+                    data = pd.read_csv(
+                        fh,
+                        sep="\t",
+                        header=None,
+                        names=DATA_FIELDS,
+                        dtype={"postal_code": str},
+                    )
+                if not os.path.exists(STORAGE_DIR):
+                    os.mkdir(STORAGE_DIR)
+                data.to_csv(data_path, index=None)
 
-        data_path = os.path.join(STORAGE_DIR, country.upper() + ".txt")
-        if os.path.exists(data_path):
-            data = pd.read_csv(data_path, dtype={"postal_code": str})
-        else:
-            download_urls = [
-                val.format(country=country) for val in DOWNLOAD_URL
-            ]
-            with _open_extract_cycle_url(download_urls, country) as fh:
-                data = pd.read_csv(
-                    fh,
-                    sep="\t",
-                    header=None,
-                    names=DATA_FIELDS,
-                    dtype={"postal_code": str},
-                )
-            if not os.path.exists(STORAGE_DIR):
-                os.mkdir(STORAGE_DIR)
-            data.to_csv(data_path, index=None)
+            self._store_postcodes(data)
 
-        return data_path, data
+    def _store_postcodes(self, data) -> None:
+        """Load data into database."""
 
-    def _index_postal_codes(self) -> pd.DataFrame:
-        """ Create a dataframe with unique postal codes """
-        data_path_unique = self._data_path.replace(".txt", "-index.txt")
+        # TODO tidy this
+        # group together places with the same postal code
+        df_unique_cp_group = data.groupby("postal_code")
+        data_unique = df_unique_cp_group[["latitude", "longitude"]].mean()
+        valid_keys = set(DATA_FIELDS).difference(
+            ["place_name", "lattitude", "longitude", "postal_code"]
+        )
+        data_unique["place_name"] = df_unique_cp_group["place_name"].apply(
+            lambda x: ", ".join([str(el) for el in x])
+        )
+        for key in valid_keys:
+            data_unique[key] = df_unique_cp_group[key].first()
+        data_unique = data_unique.reset_index()[DATA_FIELDS]
 
-        if os.path.exists(data_path_unique):
-            data_unique = pd.read_csv(
-                data_path_unique, dtype={"postal_code": str}
-            )
-        else:
+        self.loc_db.add_country_data(data_unique, self.country)
 
-            # group together places with the same postal code
-            df_unique_cp_group = self._data.groupby("postal_code")
-            data_unique = df_unique_cp_group[["latitude", "longitude"]].mean()
-            valid_keys = set(DATA_FIELDS).difference(
-                ["place_name", "lattitude", "longitude", "postal_code"]
-            )
-            data_unique["place_name"] = df_unique_cp_group["place_name"].apply(
-                lambda x: ", ".join([str(el) for el in x])
-            )
-            for key in valid_keys:
-                data_unique[key] = df_unique_cp_group[key].first()
-            data_unique = data_unique.reset_index()[DATA_FIELDS]
-            data_unique.to_csv(data_path_unique, index=None)
-        return data_unique
-
-    def _normalize_postal_code(self, codes: pd.DataFrame) -> pd.DataFrame:
+    def _normalize_postal_code(self, codes: List) -> List:
         """Normalize postal codes to the values contained in the database
 
         For instance, take into account only first letters when applicable.
         Takes in a pd.DataFrame
         """
-        codes["postal_code"] = codes.postal_code.str.upper()
+        codes = [str(code).upper() for code in codes]
 
         if self.country in ["GB", "IE", "CA"]:
-            codes["postal_code"] = codes.postal_code.str.split().str.get(0)
-        else:
-            pass
+            codes = [str(code).split()[0] for code in codes]
 
         return codes
 
@@ -296,20 +283,14 @@ class Nominatim:
 
         if isinstance(codes, str):
             codes = [codes]
-            single_entry = True
-        else:
-            single_entry = False
-
-        if not isinstance(codes, pd.DataFrame):
-            codes = pd.DataFrame(codes, columns=["postal_code"])
 
         codes = self._normalize_postal_code(codes)
-        response = pd.merge(
-            codes, self._data_frame, on="postal_code", how="left"
-        )
-        if self.unique and single_entry:
-            response = response.iloc[0]
-        return response
+
+        response = [
+            self.loc_db.find_lat_lon(self.country, code) for code in codes
+        ]
+        response = [row for row in response if row is not None]
+        return pd.DataFrame(response)
 
     def query_location(self, name):
         """Get locations information from a community/minicipality name"""
@@ -318,12 +299,11 @@ class Nominatim:
 
 class GeoDistance(Nominatim):
     """Distance calculation from a city name or a postal code
-
+    TODO: parameters are different from base clase
     Parameters
     ----------
-    data_path: str
-      path to the dataset
-    error: str, default='ignore'
+    country: str
+    errors: str, default='ignore'
       how to handle not found elements. One of
       'ignore' (return NaNs), 'error' (raise an exception),
       'nearest' (find from nearest valid points)

@@ -65,6 +65,33 @@ class LocationDatabase:
         """
         return not self.loc_table_exists()
 
+    def has_country_data(self, country_code: str) -> bool:
+        """Is the country in the database
+
+        Parameters
+        ----------
+        country_code : String
+          2 letter iso code for the country
+
+        Returns
+        -------
+        result : Boolean
+          whether the country exists in the database.
+        """
+        if self.check_first_time():
+            return False
+
+        cursor = self.conn.cursor()
+
+        sql = f"""
+            SELECT country_code
+            FROM location
+            WHERE country_code = ?
+        """
+
+        row = cursor.execute(sql, (country_code,)).fetchone()
+        return row is not None
+
     def add_country_data(
         self, df: pd.DataFrame, country_code: str, erase_first: bool = True
     ) -> None:
@@ -145,7 +172,9 @@ class LocationDatabase:
         cursor = self.conn.cursor()
 
         sql = f"""
-            SELECT country_code, postal_code, latitude, longitude, accuracy
+            SELECT postal_code, country_code, place_name, state_name,
+            state_code, county_name, county_code,
+            community_name, community_code, latitude, longitude, accuracy
             FROM location
             WHERE country_code = ?
             AND postal_code = ?
@@ -154,5 +183,20 @@ class LocationDatabase:
         row = cursor.execute(sql, (country_code, postcode)).fetchone()
         if not row:
             return None
+            # TODO how to return not found
+            # return {
+            #     'postal_code': postcode,
+            #     'country_code': country_code,
+            #     'place_name': None,
+            #     'state_name': None,
+            #     'state_code': None,
+            #     'county_name': None,
+            #     'county_code': None,
+            #     'community_name': None,
+            #     'community_code': None,
+            #     'latitude': None,
+            #     'longitude': None,
+            #     'accuracy': None
+            # }
 
         return dict(row)
